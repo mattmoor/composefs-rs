@@ -56,3 +56,7 @@ debug = true
 platforms = ["*-unknown-linux-gnu"]
 tier = "2"
 all-features = true
+
+# open_image_for_platform is not yet in a released ocidir.
+[patch.crates-io]
+ocidir = { git = "https://github.com/mattmoor/ocidir-rs", branch = "platform-selection" }
