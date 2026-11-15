@@ -25,7 +25,7 @@ use std::thread::available_parallelism;
 use anyhow::{Context, Result};
 use cap_std_ext::cap_std;
 use containers_image_proxy::oci_spec::image::{
-    Descriptor, Digest as OciDigest, ImageManifest, MediaType,
+    Descriptor, Digest as OciDigest, ImageManifest, MediaType, Platform,
 };
 use fn_error_context::context;
 use ocidir::prelude::*;
@@ -159,13 +159,18 @@ pub(crate) fn is_uncompressed_tar(path: &Path) -> bool {
         && &buf == TAR_MAGIC
 }
 
-/// Resolve a manifest from an OCI layout directory for the current platform.
+/// Resolve a manifest from an OCI layout directory for `platform`, or for the
+/// current platform when it is `None`.
 fn resolve_manifest<T: OciRead + Send + Sync>(
     oci: &T,
     tag: Option<&str>,
+    platform: Option<&Platform>,
 ) -> Result<ResolvedManifest> {
-    oci.open_image_this_platform(tag)
-        .context("Resolving manifest for platform")
+    match platform {
+        Some(platform) => oci.open_image_for_platform(tag, platform),
+        None => oci.open_image_this_platform(tag),
+    }
+    .context("Resolving manifest for platform")
 }
 
 /// Whether a layout path is an `oci:` directory or an `oci-archive:` tarball.
@@ -193,6 +198,20 @@ pub async fn import_oci_layout<ObjectID: FsVerityHashValue>(
     layout_tag: Option<&str>,
     reporter: SharedReporter,
 ) -> Result<(PullResult<ObjectID>, ImportStats)> {
+    import_oci_layout_for_platform(repo, kind, layout_path, layout_tag, reporter, None).await
+}
+
+/// [`import_oci_layout`], selecting `platform`'s manifest instead of the
+/// host's. `None` behaves exactly as [`import_oci_layout`].
+#[context("Importing OCI layout from {}", layout_path.display())]
+pub async fn import_oci_layout_for_platform<ObjectID: FsVerityHashValue>(
+    repo: &Arc<Repository<ObjectID>>,
+    kind: OciLayoutKind,
+    layout_path: &Path,
+    layout_tag: Option<&str>,
+    reporter: SharedReporter,
+    platform: Option<&Platform>,
+) -> Result<(PullResult<ObjectID>, ImportStats)> {
     // Check writability before touching the source, so a read-only repo gives
     // a clear "not writable" error rather than a misleading source-open error.
     repo.ensure_writable()?;
@@ -201,7 +220,7 @@ pub async fn import_oci_layout<ObjectID: FsVerityHashValue>(
         OciLayoutKind::Archive => {
             let oci = OciArchive::open(layout_path)
                 .with_context(|| format!("Opening OCI archive {}", layout_path.display()))?;
-            import_opened_layout(repo, oci, layout_tag, reporter).await
+            import_opened_layout(repo, oci, layout_tag, reporter, platform).await
         }
         OciLayoutKind::Directory => {
             let dir = cap_std::fs::Dir::open_ambient_dir(layout_path, cap_std::ambient_authority())
@@ -209,7 +228,7 @@ pub async fn import_oci_layout<ObjectID: FsVerityHashValue>(
                     format!("Opening OCI layout directory {}", layout_path.display())
                 })?;
             let oci = OciDir::open(dir).context("Opening OCI directory")?;
-            import_opened_layout(repo, oci, layout_tag, reporter).await
+            import_opened_layout(repo, oci, layout_tag, reporter, platform).await
         }
     }
 }
@@ -221,6 +240,7 @@ async fn import_opened_layout<ObjectID: FsVerityHashValue, T: OciRead + Send + S
     oci: T,
     tag: Option<&str>,
     reporter: SharedReporter,
+    platform: Option<&Platform>,
 ) -> Result<(PullResult<ObjectID>, ImportStats)> {
     if let Some(manifest) = detect_delta_manifest(&oci)? {
         let blob_reader = Arc::new(OciBlobReader(oci));
@@ -228,7 +248,7 @@ async fn import_opened_layout<ObjectID: FsVerityHashValue, T: OciRead + Send + S
     }
 
     // Resolve the manifest, with fallback for images lacking platform annotations
-    let resolved = resolve_manifest(&oci, tag)?;
+    let resolved = resolve_manifest(&oci, tag, platform)?;
 
     let manifest = resolved.manifest;
     let manifest_descriptor = &resolved.manifest_descriptor;

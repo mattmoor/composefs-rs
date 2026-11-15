@@ -597,6 +597,29 @@ pub async fn pull_image<ObjectID: FsVerityHashValue>(
     reporter: SharedReporter,
     boot_options: Option<&composefs::generic_tree::OciTransformOptions>,
 ) -> Result<(PullResult<ObjectID>, ImportStats)> {
+    pull_image_for_platform(
+        repo,
+        imgref,
+        reference,
+        img_proxy_config,
+        reporter,
+        boot_options,
+        None,
+    )
+    .await
+}
+
+/// [`pull_image`], selecting `platform`'s manifest from a local OCI layout
+/// instead of the host's. `None` behaves exactly as [`pull_image`].
+pub async fn pull_image_for_platform<ObjectID: FsVerityHashValue>(
+    repo: &Arc<Repository<ObjectID>>,
+    imgref: &str,
+    reference: Option<&str>,
+    img_proxy_config: Option<ImageProxyConfig>,
+    reporter: SharedReporter,
+    boot_options: Option<&composefs::generic_tree::OciTransformOptions>,
+    platform: Option<&containers_image_proxy::oci_spec::image::Platform>,
+) -> Result<(PullResult<ObjectID>, ImportStats)> {
     // Fail fast if the repository is not writable, before doing any I/O.
     repo.ensure_writable()?;
 
@@ -623,7 +646,15 @@ pub async fn pull_image<ObjectID: FsVerityHashValue>(
     });
 
     let (mut result, stats) = if let Some((kind, layout_path, layout_tag)) = oci_layout {
-        crate::oci_layout::import_oci_layout(repo, kind, layout_path, layout_tag, reporter).await?
+        crate::oci_layout::import_oci_layout_for_platform(
+            repo,
+            kind,
+            layout_path,
+            layout_tag,
+            reporter,
+            platform,
+        )
+        .await?
     } else {
         // Standard path: use skopeo proxy for other transports
         let op = Arc::new(ImageOp::new(repo, &image_ref, img_proxy_config, reporter).await?);
