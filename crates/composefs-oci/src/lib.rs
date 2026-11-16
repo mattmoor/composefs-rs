@@ -351,6 +351,11 @@ pub struct PullOptions<'a> {
     /// Supported uniformly across transports, including `containers-storage:`
     /// imports (see [`LocalFetchOpt`]).
     pub bootable: bool,
+
+    /// The platform whose manifest to select from a multi-platform source.
+    /// `None` selects the running host's platform. Honored by the local
+    /// `oci:` and `oci-archive:` paths.
+    pub platform: Option<containers_image_proxy::oci_spec::image::Platform>,
 }
 
 impl<'a> std::fmt::Debug for PullOptions<'a> {
@@ -369,6 +374,7 @@ impl<'a> std::fmt::Debug for PullOptions<'a> {
                 },
             )
             .field("bootable", &self.bootable)
+            .field("platform", &self.platform)
             .finish()
     }
 }
@@ -541,13 +547,14 @@ pub async fn pull<ObjectID: FsVerityHashValue>(
         });
     }
 
-    let (result, stats) = skopeo::pull_image(
+    let (result, stats) = skopeo::pull_image_for_platform(
         repo,
         imgref,
         reference,
         opts.img_proxy_config,
         reporter,
         boot_options.as_ref(),
+        opts.platform.as_ref(),
     )
     .await?;
     Ok(crate::PullResult {
